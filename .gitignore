@@ -1,0 +1,14 @@
+# Fichiers de test temporaires (voir CLAUDE.md)
+_*.html
+_*.js
+
+# Python
+__pycache__/
+*.pyc
+
+# Système / éditeurs
+Thumbs.db
+.DS_Store
+*.log
+.vscode/
+.claude/settings.local.json
