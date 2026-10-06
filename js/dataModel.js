@@ -1,7 +1,17 @@
 /* =========================================================================
    Lecture et mise à plat du JSON d'analyse des mesures.
 
-   Structure attendue (tolérante) :
+   Trois structures sont reconnues (detectFormat) :
+     * 'mesure1' — DataMesure 1 : excitation > famille > groupe (décrit ci-dessous) ;
+     * 'mesure2' — DataMesure 2 : excitation > groupe, une ligne par capteur,
+       chaque capteur portant un nom unique (sensor_name) ;
+     * 'iso'     — DataISO7849_1 / _2 : <racine> > TEST > excitation, tiers
+       d'octave uniquement (pas de niveau global).
+   Les deux derniers formats sont ramenés au même modèle que le premier, à
+   raison d'une « mesure » (run) par capteur : toute la chaîne d'affichage
+   (billes, échelle, RBF, fiche) reste commune. `model.flat` les signale.
+
+   Structure DataMesure 1 attendue (tolérante) :
      { EXCITATION1: { <famille>: { <groupe capteurs>: {
             run_info: { run_name:[N], position:[N], repetition:[N] },
             sensor_name: [S],
@@ -116,13 +126,238 @@ export function scanJson(json) {
   return { excitations, families, groups: groupList };
 }
 
+/* --- reconnaissance du format ---------------------------------------------- */
+
+/** Racine d'un fichier ISO 7849 : objet dont les enfants TEST* contiennent des excitations avec Accel_name. */
+function findIsoRoot(json) {
+  for (const k of Object.keys(json)) {
+    const o = json[k];
+    if (!isObj(o)) continue;
+    const hasTest = Object.keys(o).some((t) => /^TEST/i.test(t) && isObj(o[t])
+      && Object.values(o[t]).some((x) => isObj(x) && isArr(x.Accel_name)));
+    if (hasTest) return k;
+  }
+  return null;
+}
+
+/** Bloc capteurs placé directement sous une excitation (DataMesure 2). */
+function flatBlocks(json) {
+  const out = [];
+  for (const e of Object.keys(json)) {
+    if (!isObj(json[e])) continue;
+    for (const g of Object.keys(json[e])) {
+      const blk = json[e][g];
+      if (isObj(blk) && pickKeySet(blk)) out.push({ exc: e, group: g });
+    }
+  }
+  return out;
+}
+
+const isoLabel = (m) => String(m).replace(/^ISO\s*(\d+)[_\-\s]?(\d+)?$/i, (s, a, b) => `ISO ${a}${b ? '-' + b : ''}`);
+
 /**
- * Construit le modèle exploitable par l'application pour un groupe de capteurs.
+ * Identifie la structure du fichier et liste ce que l'utilisateur peut choisir.
+ * @returns {{kind:'mesure1'|'mesure2'|'iso', label:string, groups:string[], tests:string[], root?:string}}
+ */
+export function detectFormat(json) {
+  if (!isObj(json)) throw new Error('Le JSON ne contient pas un objet racine.');
+
+  const root = findIsoRoot(json);
+  if (root) {
+    const tests = Object.keys(json[root]).filter((t) => isObj(json[root][t])).sort(naturalCompare);
+    const methode = json.Metadata?.methode || root.replace(/^Data/i, '');
+    return { kind: 'iso', label: `Méthode ${isoLabel(methode)}`, root, tests, groups: [] };
+  }
+
+  const flat = flatBlocks(json);
+  if (flat.length) {
+    const groups = [...new Set(flat.map((b) => b.group))].sort((a, b) =>
+      (a === 'Accel' ? -1 : b === 'Accel' ? 1 : naturalCompare(a, b)));
+    return { kind: 'mesure2', label: 'DataMesure 2 — capteurs à nom unique', groups, tests: [] };
+  }
+
+  const scan = scanJson(json);
+  return { kind: 'mesure1', label: 'DataMesure 1 — mesures par famille', groups: scan.groups, tests: [] };
+}
+
+/**
+ * Construit le modèle exploitable par l'application.
+ * @param {object} json  contenu brut du fichier
+ * @param {{group?:string, test?:string}} opts groupe de capteurs (« Accel ») / test ISO
+ */
+export function buildModel(json, opts = {}) {
+  const fmt = detectFormat(json);
+  let model;
+  if (fmt.kind === 'iso') model = buildModelIso(json, fmt, opts.test);
+  else if (fmt.kind === 'mesure2') model = buildModelFlat(json, fmt, opts.group);
+  else model = buildModelV1(json, opts.group);
+  model.format = fmt.kind;
+  model.formatLabel = fmt.label;
+  return model;
+}
+
+/** Modèle d'une liste de capteurs uniques (DataMesure 2 et ISO) : un run par capteur. */
+function flatModel({ group, excitations, sensors, freqs, quantity, hasGlobal, famTitle, warnings, extra }) {
+  const runList = [...sensors.values()].sort((a, b) => naturalCompare(a.key, b.key));
+  let nNoCoord = 0;
+  for (const run of runList) {
+    if (!run.coords[0]) nNoCoord++;
+    run.nCoords = run.coords[0] ? 1 : 0;
+  }
+  if (nNoCoord) warnings.push(`<b>${nNoCoord}</b> capteur(s) sans coordonnées : non représenté(s) en 3D.`);
+  return {
+    group,
+    excitations,
+    families: [{ key: '', label: 'Capteurs', runs: runList }],
+    runList,
+    runById: new Map(runList.map((r) => [r.id, r])),
+    freqs: freqs || [],
+    nBands: freqs ? freqs.length : 0,
+    quantity,
+    rawUnit: null,
+    unit: 'dB',
+    warnings,
+    availableGroups: [group],
+    flat: true,
+    hasGlobal,
+    famTitle,
+    ...extra,
+  };
+}
+
+/** Capteur (run à un seul capteur) créé à la première rencontre de son nom. */
+function sensorRun(sensors, name, famLabelTxt) {
+  if (!sensors.has(name)) {
+    sensors.set(name, {
+      id: name, famKey: '', famLabel: famLabelTxt,
+      key: name, label: name,
+      fullNames: {}, data: {},
+      sensorNames: [name], nSensors: 1,
+      coords: [null], coordsFrom: null,
+    });
+  }
+  return sensors.get(name);
+}
+
+function readCoord(p) {
+  if (!isArr(p) || p.length < 3) return null;
+  const x = num(p[0]), y = num(p[1]), z = num(p[2]);
+  return isNaN(x) || isNaN(y) || isNaN(z) ? null : [x, y, z];
+}
+
+/**
+ * DataMesure 2 : { EXCITATION<n>: { Accel: { sensor_name:[N], run_info:{run_name:[N]},
+ *   sensor_coordinates:[N][3], Data_3rdOctave_Vel:[N][B], Data_GlobalLevel_Vel:[N] } } }
+ * Une ligne = un capteur, identifié par son nom unique (pas par son nom dans le lot).
+ */
+function buildModelFlat(json, fmt, group) {
+  group = fmt.groups.includes(group) ? group : fmt.groups[0];
+  const warnings = [];
+  const all = Object.keys(json).filter((k) => isObj(json[k]?.[group]) && pickKeySet(json[k][group]));
+  /* Seules les excitations sont retenues : le bruit de fond (BDF) ne porte pas
+     de coordonnées et ses noms de capteurs sont des noms de lot, qui
+     récupéreraient à tort la position des capteurs homonymes. */
+  const excKeys = all.some((k) => /^exc/i.test(k)) ? all.filter((k) => /^exc/i.test(k)) : all;
+  const ignored = all.filter((k) => !excKeys.includes(k));
+  if (ignored.length) warnings.push(`Bloc(s) ${ignored.join(', ')} ignoré(s) : pas de coordonnées capteurs.`);
+  excKeys.sort(naturalCompare);
+  if (!excKeys.length) throw new Error('Aucune excitation exploitable dans ce fichier DataMesure 2.');
+
+  const excitations = excKeys.map((key, i) => ({ key, label: excLabel(key), color: EXC_COLORS[i % EXC_COLORS.length] }));
+  const sensors = new Map();
+  let freqs = null, quantity = null, nDup = 0;
+
+  for (const exc of excKeys) {
+    const blk = json[exc][group];
+    const ks = pickKeySet(blk);
+    if (!quantity) quantity = ks.quantity;
+    if (!freqs && isArr(blk.frq_3rdOctave) && blk.frq_3rdOctave.length) freqs = blk.frq_3rdOctave.map(Number);
+    const names = isArr(blk.sensor_name) ? blk.sensor_name : [];
+    const runNames = blk.run_info?.run_name;
+    const third = isArr(blk[ks.third]) ? blk[ks.third] : null;
+    const glob = isArr(blk[ks.global]) ? blk[ks.global] : null;
+    const coords = isArr(blk.sensor_coordinates) ? blk.sensor_coordinates : null;
+    const n = Math.max(names.length, third ? third.length : 0, glob ? glob.length : 0);
+    const seen = new Set();
+
+    for (let r = 0; r < n; r++) {
+      let name = names[r] != null ? String(names[r]) : `Capteur ${String(r + 1).padStart(3, '0')}`;
+      if (seen.has(name)) { nDup++; let k = 2; while (seen.has(`${name} (${k})`)) k++; name = `${name} (${k})`; }
+      seen.add(name);
+      const runName = isArr(runNames) && runNames[r] != null ? String(runNames[r]) : exc;
+      const run = sensorRun(sensors, name, runKeyOf(runName).replace(/_/g, ' '));
+      run.fullNames[exc] = runName;
+      run.data[exc] = {
+        third: third && isArr(third[r]) ? [third[r]] : null,
+        global: glob && glob[r] != null ? [glob[r]] : null,
+      };
+      if (!run.coords[0]) {
+        const c = readCoord(coords && coords[r]);
+        if (c) { run.coords[0] = c; run.coordsFrom = exc; }
+      }
+    }
+  }
+  if (nDup) warnings.push(`<b>${nDup}</b> nom(s) de capteur en double dans une même excitation : suffixés.`);
+
+  return flatModel({
+    group, excitations, sensors, freqs,
+    quantity: quantity || 'Niveau', hasGlobal: true,
+    famTitle: 'Mesure d\'origine', warnings, extra: {},
+  });
+}
+
+/**
+ * DataISO7849_1 / _2 : { DataISO7849_x: { TEST<n>: { EXCITATION<n>: {
+ *   Accel_name:[S], Accel_coordinates:[S][3], Data_3rdOctave_Vel:[S][B], frq_3rdOctave:[B] } } },
+ *   Metadata: {...} }
+ * Seul le spectre de vitesse en tiers d'octave est exploité (pas de niveau global).
+ */
+function buildModelIso(json, fmt, test) {
+  if (!fmt.tests.length) throw new Error('Aucun TEST dans ce fichier ISO 7849.');
+  test = fmt.tests.includes(test) ? test : fmt.tests[0];
+  const T = json[fmt.root][test];
+  const excKeys = Object.keys(T).filter((k) => isObj(T[k]) && isArr(T[k].Accel_name)).sort(naturalCompare);
+  if (!excKeys.length) throw new Error(`Aucune excitation exploitable dans ${test}.`);
+  const warnings = [];
+  const excitations = excKeys.map((key, i) => ({ key, label: excLabel(key), color: EXC_COLORS[i % EXC_COLORS.length] }));
+  const sensors = new Map();
+  let freqs = null, nNoData = 0;
+
+  for (const exc of excKeys) {
+    const E = T[exc];
+    if (!freqs && isArr(E.frq_3rdOctave) && E.frq_3rdOctave.length) freqs = E.frq_3rdOctave.map(Number);
+    const third = isArr(E.Data_3rdOctave_Vel) ? E.Data_3rdOctave_Vel : null;
+    if (!third) nNoData++;
+    const coords = isArr(E.Accel_coordinates) ? E.Accel_coordinates : null;
+    E.Accel_name.forEach((nm, s) => {
+      const name = String(nm);
+      const run = sensorRun(sensors, name, test.replace(/_/g, ' '));
+      run.fullNames[exc] = `${fmt.label.replace(/^Méthode /, '')} · ${test}`;
+      run.data[exc] = { third: third && isArr(third[s]) ? [third[s]] : null, global: null };
+      if (!run.coords[0]) {
+        const c = readCoord(coords && coords[s]);
+        if (c) { run.coords[0] = c; run.coordsFrom = exc; }
+      }
+    });
+  }
+  if (nNoData) warnings.push(`<b>${nNoData}</b> excitation(s) sans Data_3rdOctave_Vel dans ${test}.`);
+
+  return flatModel({
+    group: 'Accel', excitations, sensors, freqs,
+    quantity: 'Vitesse vibratoire', hasGlobal: false,
+    famTitle: 'Test', warnings,
+    extra: { tests: fmt.tests, test },
+  });
+}
+
+/**
+ * DataMesure 1 : construit le modèle pour un groupe de capteurs.
  * @param {object} json  contenu brut du fichier
  * @param {string} group nom du groupe (ex. « Accel »)
  */
-export function buildModel(json, group) {
+function buildModelV1(json, group) {
   const scan = scanJson(json);
+  if (!scan.groups.includes(group)) group = scan.groups.includes('Accel') ? 'Accel' : scan.groups[0];
   const excitations = scan.excitations.map((key, i) => ({
     key, label: excLabel(key), color: EXC_COLORS[i % EXC_COLORS.length],
   }));
@@ -261,6 +496,9 @@ export function buildModel(json, group) {
     unit: 'dB',
     warnings,
     availableGroups: scan.groups,
+    flat: false,
+    hasGlobal: true,
+    famTitle: 'Famille',
   };
 }
 

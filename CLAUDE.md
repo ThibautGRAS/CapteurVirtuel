@@ -37,7 +37,7 @@ après coup.
 | Fichier | Rôle |
 |---|---|
 | `js/app.js` | objet `state` unique + branchement de toute l'interface. Point d'entrée. |
-| `js/dataModel.js` | JSON → modèle plat (`runList`, `families`, `excitations`), accès aux valeurs |
+| `js/dataModel.js` | `detectFormat()` + JSON → modèle plat (`runList`, `families`, `excitations`), accès aux valeurs |
 | `js/cadLoader.js` | STEP/IGES/BREP → `THREE.Group` (OpenCascade WASM) |
 | `js/scene3d.js` | classe `Scene3D` : une instance par vue/excitation |
 | `js/interp.js` | RBF : noyaux, solveur dense (Gauss + pivot), réduction du nuage |
@@ -131,6 +131,25 @@ Deux pièges de visibilité déjà corrigés, à ne pas réintroduire :
   `applyProject()` tolérant (mesures ou CAO absentes, ids de mesures disparus,
   `version` inconnue). Tout nouvel état durable s'ajoute aux deux fonctions **et**
   à `pushStateToControls()`.
+* **Trois formats JSON, un seul modèle.** `detectFormat()` distingue
+  `mesure1` (excitation › famille › groupe), `mesure2` (excitation › groupe,
+  une ligne par capteur) et `iso` (racine › `TEST*` › excitation avec
+  `Accel_name`). Les deux derniers sont ramenés au modèle historique avec **un
+  run par capteur** (`nSensors = 1`, `run.id` = nom unique du capteur) et
+  `model.flat = true` : billes, échelle, RBF, fiche et sélection inter-vues
+  (`run.id` + `si`) restent communs. Ne pas créer de chemin d'affichage
+  parallèle pour un nouveau format : le ramener à ce modèle.
+* `model.hasGlobal = false` (ISO) force `state.mode = 'band'` et grise le
+  bouton global ; `applyProject()` respecte cette contrainte.
+* DataMesure 2 : seules les clés `EXC*` sont retenues quand il y en a. Le
+  `BDF` n'a pas de coordonnées et ses `sensor_name` sont des noms de lot :
+  mutualiser ses coordonnées par nom lui attribuerait à tort la position des
+  capteurs homonymes.
+* **Étiquettes** (`Scene3D.setLabels`) : calque HTML par vue, projeté dans
+  `update()` après chaque rendu, `idx` aligné sur `records`. Le DOM n'est
+  reconstruit que si la liste change (clé texte + position), pas au curseur de
+  bande. `state.labels = null` au chargement = choix automatique
+  (`LABELS_AUTO_MAX`).
 
 ## Conventions
 

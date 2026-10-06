@@ -69,6 +69,16 @@ export class Scene3D {
     this.hoverMark = mk(0xffffff, 1.28, 0.9);
     this.selMark = mk(0xf28100, 1.5, 1.0);
 
+    /* --- étiquettes HTML des capteurs (projetées à chaque rendu) --- */
+    this.labelLayer = document.createElement('div');
+    this.labelLayer.className = 'tags3d';
+    container.appendChild(this.labelLayer);
+    this.labels = [];          // [{ idx, text, pos, el }]
+    this._labelKey = '';
+    this._labelsAll = false;
+    this._hotIdx = -1;
+    this._selIdx = -1;
+
     this.raycaster = new THREE.Raycaster();
     this._ro = new ResizeObserver(() => this.resize());
     this._ro.observe(container);
@@ -299,6 +309,7 @@ export class Scene3D {
 
   setPointsVisible(on) {
     this.pointsRoot.visible = !!on;
+    this._labelClasses();          // « surface seule » : étiquettes masquées aussi
     this.dirty = true;
   }
 
@@ -433,6 +444,85 @@ export class Scene3D {
     this.dirty = true;
   }
 
+  /* --------------------------------------------------------------- étiquettes */
+  /**
+   * Étiquettes de noms de capteurs.
+   * @param {Array|null} items [{ idx, text, pos }] — idx aligné sur `records`
+   * @param {boolean} showAll true : toutes affichées ; false : seules la bille
+   *   survolée et la bille sélectionnée gardent leur étiquette.
+   * Le DOM n'est reconstruit que si la liste change (pas au déplacement du
+   * curseur de bande, qui ne modifie que les couleurs).
+   */
+  setLabels(items, showAll) {
+    items = items || [];
+    const key = items.map((it) => `${it.idx}:${it.text}:${it.pos.join(',')}`).join('|');
+    if (key !== this._labelKey) {
+      this._labelKey = key;
+      this.labelLayer.textContent = '';
+      this.labels = items.map((it) => {
+        const el = document.createElement('span');
+        el.className = 'tag3d';
+        el.textContent = it.text;
+        this.labelLayer.appendChild(el);
+        return { ...it, el };
+      });
+    }
+    this._labelsAll = !!showAll;
+    this._labelClasses();
+    this.dirty = true;
+  }
+
+  /** Bille mise en évidence (survol 3D ou survol de la liste), -1 pour aucune. */
+  setLabelHot(idx) {
+    if (idx === this._hotIdx) return;
+    this._hotIdx = idx;
+    this._labelClasses();
+    this.dirty = true;
+  }
+
+  setLabelSelected(idx) {
+    if (idx === this._selIdx) return;
+    this._selIdx = idx;
+    this._labelClasses();
+    this.dirty = true;
+  }
+
+  _labelClasses() {
+    const visible = this.pointsRoot.visible;
+    for (const l of this.labels) {
+      const hot = l.idx === this._hotIdx, sel = l.idx === this._selIdx;
+      l.el.classList.toggle('is-hot', hot);
+      l.el.classList.toggle('is-sel', sel);
+      l.on = visible && (this._labelsAll || hot || sel);
+      l.el.classList.toggle('off', !l.on);
+    }
+  }
+
+  /** Positions écran (px CSS, relatives au canevas) des étiquettes affichées. */
+  _layoutLabels() {
+    if (!this.labels.length) return;
+    const { w, h } = this._size();
+    const v = new THREE.Vector3();
+    for (const l of this.labels) {
+      if (!l.on) continue;
+      v.set(l.pos[0], l.pos[1], l.pos[2]).project(this.camera);
+      const inside = v.z < 1 && v.z > -1 && Math.abs(v.x) <= 1.05 && Math.abs(v.y) <= 1.05;
+      l.x = (v.x + 1) / 2 * w;
+      l.y = (1 - v.y) / 2 * h;
+      l.inside = inside;
+      l.el.style.visibility = inside ? '' : 'hidden';
+      if (inside) l.el.style.transform = `translate(${Math.round(l.x + 7)}px, ${Math.round(l.y - 7)}px) translateY(-100%)`;
+    }
+  }
+
+  /** Étiquettes visibles, en pixels du canevas (pour l'export PNG). */
+  labelSnapshot() {
+    this._layoutLabels();
+    const dpr = this.renderer.getPixelRatio();
+    return this.labels.filter((l) => l.on && l.inside)
+      .map((l) => ({ text: l.text, x: l.x * dpr, y: l.y * dpr, hot: l.idx === this._hotIdx || l.idx === this._selIdx }));
+  }
+
   setFloorZ(z) { this._floorZ = z; }
 
   setBackground(hex) { this.scene.background = new THREE.Color(hex); this.dirty = true; }
@@ -558,6 +648,7 @@ export class Scene3D {
     const moved = this.controls.update();
     if (moved || this.dirty) {
       this.renderer.render(this.scene, this.camera);
+      this._layoutLabels();
       this.dirty = false;
       return true;
     }
@@ -568,6 +659,7 @@ export class Scene3D {
     this._ro.disconnect();
     this.controls.dispose();
     if (this.inst) this.inst.dispose();
+    this.labelLayer.remove();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

@@ -33,7 +33,18 @@ n'importe où dans la fenêtre :
 L'ordre n'a pas d'importance, et chacun peut être rechargé à tout moment.
 Les mesures s'affichent même sans CAO.
 
-### Structure JSON attendue
+Un seul fichier de mesures est ouvert à la fois. Pour en étudier un autre, de
+même format ou non, il suffit de le charger : il remplace le précédent (la CAO
+et son recalage sont conservés). Le format reconnu est affiché dans le panneau
+*Fichiers*. Trois structures sont reconnues automatiquement :
+
+| Format | Reconnu par | Affichage |
+|---|---|---|
+| **DataMesure 1** (`DataMesure_v01.json`) | excitation › famille › groupe | arbre des mesures par famille, niveau global ou tiers d'octave |
+| **DataMesure 2** (`DataMesure2_v02.json`) | excitation › groupe, une ligne par capteur | liste des capteurs à nom unique, niveau global ou tiers d'octave |
+| **DataISO7849_1 / _2** | racine › `TEST<n>` › excitation | choix du test, liste des capteurs, **tiers d'octave uniquement** |
+
+### Structure DataMesure 1
 
 ```
 EXCITATION1 / EXCITATION2 / EXCITATION3
@@ -59,6 +70,47 @@ Souplesses prises en charge :
 * Nombre d'excitations, de familles, de capteurs et de bandes quelconque.
 * Si plusieurs groupes de capteurs exploitables existent, un sélecteur apparaît
   sous *Grandeur affichée* (`Accel` par défaut).
+* L'affichage s'ouvre sur la première excitation qui a des billes affichables
+  (un bloc `BDF` sans coordonnées placé en tête ne donne pas une vue vide).
+
+### Structure DataMesure 2
+
+```
+EXCITATION1 / EXCITATION2 / EXCITATION3   (BDF ignoré : aucune coordonnée)
+   └── Accel
+        ├── sensor_name[N]                nom unique du capteur (Accel01…Accel210)
+        ├── run_info.run_name[N]          mesure d'origine (Exc1_Base_Circulaire_Pos1_Rep1…)
+        ├── run_info.sensor_name_in_run   nom dans le lot — non utilisé
+        ├── sensor_coordinates[N][3]      X, Y, Z en mm
+        ├── frq_3rdOctave[B]
+        ├── Data_3rdOctave_Vel[N][B]
+        └── Data_GlobalLevel_Vel[N]
+```
+
+Les capteurs ne sont pas classés par famille : chacun est une ligne de la liste
+*Capteurs*, identifié par son **nom unique**. Les capteurs homonymes de deux
+excitations sont le même point (coordonnées mutualisées). Le bloc `Micro` (niveaux
+de puissance acoustique) n'est pas représenté.
+
+### Structure DataISO7849_1 / DataISO7849_2
+
+```
+DataISO7849_x
+   └── TEST1 / TEST2 / …
+        └── EXCITATION1 / EXCITATION2 / …
+             ├── Accel_name[S]
+             ├── Accel_coordinates[S][3]
+             ├── frq_3rdOctave[B]          fréquences du curseur
+             └── Data_3rdOctave_Vel[S][B]  seule donnée représentée
+Metadata                                    (méthode, date… — informatif)
+```
+
+Ces fichiers ne contiennent pas de niveau global par capteur : seul le spectre
+de vitesse en tiers d'octave est affiché, le bouton *Niveau global* est grisé.
+Les autres grandeurs (`Data_3rdOctave_Acou`, `_Vib`, facteur de rayonnement…)
+sont ignorées. Le choix du **test** se fait en tête du panneau *Test et
+excitations* ; changer de test conserve les excitations affichées quand elles
+existent encore, et recoche tous les capteurs.
 
 ## 3. Fonctions
 
@@ -82,6 +134,19 @@ des boîtes englobantes) à affiner ensuite.
 **Mesures** — arbre par famille, cases individuelles et par famille (état
 intermédiaire visible), filtre texte, tout cocher / tout décocher. Tout est
 coché par défaut.
+
+**Capteurs** (DataMesure 2 et ISO 7849) — remplace l'arbre des mesures : une
+case par capteur, filtre texte, tout cocher / tout décocher (tout coché par
+défaut). Pour relier une position à un nom :
+
+* **étiquettes** à côté de chaque bille (case *Afficher les noms des capteurs*
+  du panneau *Billes*). Elles sont activées d'office jusqu'à 60 capteurs, et
+  désactivées au-delà, car elles se recouvrent ;
+* sans étiquettes, le nom apparaît **au survol** d'une bille ;
+* survoler une ligne de la liste met le capteur en évidence dans toutes les vues ;
+* cliquer une bille surligne sa ligne dans la liste et ouvre la fiche capteur.
+
+Les étiquettes sont reportées sur l'export PNG.
 
 **Excitations** — une ou plusieurs ; chaque excitation cochée ouvre une vue
 supplémentaire juxtaposée, toutes partageant la même échelle de couleurs.
@@ -162,7 +227,7 @@ serveur.py            serveur HTTP local (sans cache, MIME wasm correct)
 index.html            structure de l'interface
 css/style.css         thème Cetim (variables CSS en tête de fichier)
 js/app.js             état applicatif, interface, orchestration
-js/dataModel.js       lecture du JSON, mutualisation des coordonnées, accès aux valeurs
+js/dataModel.js       détection du format JSON (3 structures), mutualisation des coordonnées, accès aux valeurs
 js/cadLoader.js       lecture STEP/IGES/BREP (OpenCascade) -> géométries three.js
 js/scene3d.js         vue 3D : caméra, CAO transformable, billes instanciées, picking, champ RBF
 js/interp.js          interpolation RBF (noyaux, solveur dense, régularisation)

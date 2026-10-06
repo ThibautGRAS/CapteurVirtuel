@@ -85,7 +85,10 @@
           <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4"/></svg>
           Recharger les derniers fichiers
         </button>
-        <div class="hint">Astuce : les fichiers peuvent aussi être glissés-déposés n'importe où dans la fenêtre.</div>
+        <div id="fmtBox" class="infobox" hidden></div>
+        <div class="hint">Astuce : les fichiers peuvent aussi être glissés-déposés n'importe où dans la fenêtre.
+          Un nouveau fichier de mesures remplace le précédent, quel que soit son format
+          (DataMesure 1, DataMesure 2, DataISO7849_1 / _2).</div>
         <div id="warnBox" class="warnbox" hidden></div>
         <div id="projBox" class="projbox" hidden></div>
       </div>
@@ -93,8 +96,12 @@
 
     <!-- --- Excitations --- -->
     <section class="card open" data-sec="exc" hidden>
-      <h2 class="card-head"><span class="chev"></span>Excitations<span class="badge" id="badgeExc">—</span></h2>
+      <h2 class="card-head"><span class="chev"></span><span id="excTitle">Excitations</span><span class="badge" id="badgeExc">—</span></h2>
       <div class="card-body">
+        <div class="field" id="testWrap" hidden>
+          <label class="lbl">Test</label>
+          <select id="selTest"></select>
+        </div>
         <div class="chips" id="excChips"></div>
         <div class="hint">Plusieurs excitations cochées ⇒ vues juxtaposées, échelle de couleurs commune.</div>
       </div>
@@ -167,6 +174,8 @@
         <input type="range" id="rngBallOpacity" min="10" max="100" step="1" value="100">
         <label class="check"><input type="checkbox" id="chkScaleByLevel"><span></span>Taille proportionnelle au niveau</label>
         <label class="check"><input type="checkbox" id="chkInspect" checked><span></span>Mode identification (survol / clic)</label>
+        <label class="check" id="labelsWrap" hidden title="Sans les étiquettes, le nom reste affiché au survol d'une bille ou d'une ligne de la liste">
+          <input type="checkbox" id="chkLabels" checked><span></span>Afficher les noms des capteurs</label>
       </div>
     </section>
 
@@ -277,7 +286,7 @@
 
     <!-- --- Mesures --- -->
     <section class="card open" data-sec="runs" hidden>
-      <h2 class="card-head"><span class="chev"></span>Mesures<span class="badge" id="badgeRuns">—</span></h2>
+      <h2 class="card-head"><span class="chev"></span><span id="runsTitle">Mesures</span><span class="badge" id="badgeRuns">—</span></h2>
       <div class="card-body">
         <input type="search" id="runSearch" class="search" placeholder="Filtrer les mesures…">
         <div class="row">
@@ -285,6 +294,7 @@
           <button class="btn tiny" id="btnNoRuns">Tout décocher</button>
         </div>
         <div class="tree" id="runTree"></div>
+        <div class="hint" id="runsHint" hidden>Survolez un capteur pour le repérer dans les vues ; un clic sur une bille surligne sa ligne.</div>
       </div>
     </section>
 
@@ -308,7 +318,7 @@
     </section>
 
     <footer class="side-foot">
-      <span>VISUDATA v1.0</span><span class="dot"></span><span>Cetim</span>
+      <span>VISUDATA v2.0</span><span class="dot"></span><span>Cetim</span>
     </footer>
   </aside>
 
@@ -352,7 +362,7 @@
         <button class="btn icon tiny" id="dClose" title="Fermer (Échap)">✕</button>
       </div>
       <div class="detail-body">
-        <div class="kv"><span>Famille</span><b id="dFam">—</b></div>
+        <div class="kv"><span id="dFamLbl">Famille</span><b id="dFam">—</b></div>
         <div class="kv"><span>Position (mm)</span><b id="dPos">—</b></div>
         <div class="kv"><span>Grandeur</span><b id="dMetric">—</b></div>
         <div class="d-vals" id="dVals"></div>

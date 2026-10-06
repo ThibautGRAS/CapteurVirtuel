@@ -9,7 +9,7 @@ import {
   loadCadFile, ensureCadEdges, hasCadEdges, setCadEdgesVisible, warmup,
 } from './cadLoader.js';
 import {
-  buildModel, scanJson, buildRecords, valueRange, sensorValue, sensorSpectrum, formatFreq,
+  buildModel, detectFormat, buildRecords, valueRange, sensorValue, sensorSpectrum, formatFreq,
 } from './dataModel.js';
 import { colormap, listColormaps, paintGradient, cssColor } from './colormaps.js';
 import { KERNELS, POLY, buildRbf, meanNearestDistance } from './interp.js';
@@ -29,6 +29,7 @@ const state = {
   model: null,
   cad: null,                 // { group, parts, bbox, ... }
   group: null,               // groupe de capteurs actif (Accel…)
+  test: null,                // test affiché (format ISO 7849)
 
   excSel: new Set(),
   mode: 'global',            // 'global' | 'band'
@@ -47,6 +48,7 @@ const state = {
   ballOpacity: 1,
   scaleByLevel: false,
   inspect: true,
+  labels: true,              // étiquettes de noms (formats à capteurs nommés) ; null = auto
 
   cadScale: 1,
   cadT: [0, 0, 0],
@@ -86,6 +88,8 @@ const state = {
     unlit: true,             // couleurs non modulées par l'éclairage
   },
 };
+
+const LABELS_AUTO_MAX = 60;  // étiquettes affichées d'office jusqu'à ce nombre de capteurs
 
 let pendingProject = null;   // projet à appliquer dès que les mesures seront là
 let interpTimer = null;
@@ -133,15 +137,24 @@ async function loadJson(file, handle = null, parsed = null) {
   showLoading('Lecture du fichier de mesures…');
   try {
     const json = parsed || JSON.parse(await file.text());
-    const scan = scanJson(json);
+    const fmt = detectFormat(json);
     state.rawJson = json;
-    state.group = scan.groups.includes('Accel') ? 'Accel' : scan.groups[0];
+    state.group = fmt.groups.includes('Accel') ? 'Accel' : (fmt.groups[0] || null);
+    state.test = fmt.tests[0] || null;
+    // changement de fichier (et éventuellement de format) : rien de l'ancien modèle ne survit
+    state.selected = null;
+    state.excFilter.clear();
+    state.excSel.clear();
+    state.labels = null;           // choix automatique selon le nombre de capteurs
     buildFromJson();
+    if (state.cad) { attachCad(); applyCadTransform(); applyCadAppearance(); applyInterp(true); }
     state.files.json = fileMeta(file);
     if (handle) putHandle('json', handle);
     $('jsonName').textContent = `${file.name} — ${(file.size / 1048576).toFixed(1)} Mo`;
     $('dropJson').classList.add('ok');
-    toast(`${state.model.runList.length} mesures chargées`, 'ok');
+    toast(state.model.flat
+      ? `${state.model.formatLabel} : ${state.model.runList.length} capteurs chargés`
+      : `${state.model.runList.length} mesures chargées`, 'ok');
     if (pendingProject) { const p = pendingProject; pendingProject = null; applyProject(p); }
   } catch (e) {
     console.error(e);
@@ -153,15 +166,27 @@ async function loadJson(file, handle = null, parsed = null) {
 }
 
 function buildFromJson() {
-  const model = buildModel(state.rawJson, state.group);
+  const model = buildModel(state.rawJson, { group: state.group, test: state.test });
   state.model = model;
+  state.group = model.group;
+  if (model.test) state.test = model.test;
 
-  // sélections par défaut : tout coché
+  // sélections par défaut : tout coché ; les excitations déjà affichées sont
+  // conservées si elles existent encore (changement de test ou de groupe)
   state.selRuns = new Set(model.runList.map((r) => r.id));
-  state.excSel = new Set(model.excitations.length ? [model.excitations[0].key] : []);
+  const keepExc = model.excitations.filter((e) => state.excSel.has(e.key)).map((e) => e.key);
+  // à défaut, première excitation ayant des billes affichables (un bloc BDF
+  // placé en tête, sans coordonnées, ouvrirait sinon une vue vide)
+  const firstExc = model.excitations.find((e) => valueRange(model, [...state.selRuns], [e.key], 'global', 0)
+    || valueRange(model, [...state.selRuns], [e.key], 'band', 0)) || model.excitations[0];
+  state.excSel = new Set(keepExc.length ? keepExc : (firstExc ? [firstExc.key] : []));
   state.famOpen = new Set(model.families.map((f) => f.key));
   state.band = Math.min(state.band, Math.max(0, model.nBands - 1));
   if (!model.nBands) state.mode = 'global';
+  if (!model.hasGlobal && model.nBands) state.mode = 'band';   // ISO 7849 : tiers d'octave uniquement
+  if (state.selected && !model.runById.has(state.selected.rec.run.id)) state.selected = null;
+  // au-delà de LABELS_AUTO_MAX capteurs les étiquettes se recouvrent : survol seul par défaut
+  if (state.labels === null) state.labels = model.runList.length <= LABELS_AUTO_MAX;
 
   // boîte englobante des capteurs -> dimension caractéristique
   sensorBox = new THREE.Box3();
@@ -173,6 +198,7 @@ function buildFromJson() {
   state.radius = radiusFromT(state.radiusT);
 
   buildExcChips();
+  buildTestSelect();
   buildGroupSelect();
   buildRunTree();
   buildBandSlider();
@@ -180,6 +206,9 @@ function buildFromJson() {
   setupInterpBounds();
   showPanels(true);
   refreshWarnings();
+  refreshFormatInfo();
+  $('labelsWrap').hidden = !model.flat;
+  $('chkLabels').checked = state.labels;
 
   rebuildViews(true);
   refreshAll();
@@ -244,6 +273,21 @@ function refreshWarnings() {
   box.innerHTML = w.map((x) => `<div>• ${x}</div>`).join('');
 }
 
+/** Encart « format détecté » de la carte Fichiers. */
+function refreshFormatInfo() {
+  const m = state.model;
+  const box = $('fmtBox');
+  box.hidden = !m;
+  if (!m) return;
+  const nExc = m.excitations.length;
+  const parts = [`Format : <b>${m.formatLabel}</b>`];
+  if (m.tests) parts.push(`${m.tests.length} test(s) · ${nExc} excitation(s) dans ${m.test}`);
+  else parts.push(`${nExc} excitation(s)`);
+  parts.push(m.flat ? `${m.runList.length} capteur(s)` : `${m.runList.length} mesure(s)`);
+  if (!m.hasGlobal) parts.push('Tiers d\'octave uniquement (pas de niveau global dans ce fichier)');
+  box.innerHTML = parts.join('<br>');
+}
+
 function showPanels(withModel) {
   for (const sec of ['exc', 'metric', 'color', 'balls', 'interp', 'runs', 'disp']) {
     const el = document.querySelector(`[data-sec="${sec}"]`);
@@ -278,6 +322,23 @@ function buildExcChips() {
     box.appendChild(b);
   }
   $('badgeExc').textContent = `${state.excSel.size}/${state.model.excitations.length}`;
+  $('excTitle').textContent = state.model.tests ? 'Test et excitations' : 'Excitations';
+}
+
+/** Choix du TEST (format ISO 7849) : reconstruit le modèle du test choisi. */
+function buildTestSelect() {
+  const tests = state.model.tests || [];
+  $('testWrap').hidden = !tests.length;
+  const sel = $('selTest');
+  sel.innerHTML = tests.map((t) => `<option value="${t}"${t === state.test ? ' selected' : ''}>${t.replace(/_/g, ' ')}</option>`).join('');
+  sel.onchange = () => {
+    state.test = sel.value;
+    state.selected = null;
+    state.excFilter.clear();
+    buildFromJson();
+    if (state.cad) { attachCad(); applyCadTransform(); applyCadAppearance(); applyInterp(true); }
+    updateDetail();
+  };
 }
 
 function buildGroupSelect() {
@@ -305,6 +366,10 @@ function buildBandSlider() {
     t.innerHTML = idx.map((i) => `<span>${formatFreq(m.freqs[i])}</span>`).join('');
   } else t.innerHTML = '';
   document.querySelector('#segMode [data-mode="band"]').disabled = m.nBands === 0;
+  const gBtn = document.querySelector('#segMode [data-mode="global"]');
+  gBtn.disabled = !m.hasGlobal;
+  gBtn.title = m.hasGlobal ? '' : 'Niveau global absent de ce fichier';
+  document.querySelectorAll('#segMode button').forEach((b) => b.classList.toggle('is-on', b.dataset.mode === state.mode));
   $('bandWrap').hidden = state.mode !== 'band';
   updateBandOut();
 }
@@ -317,6 +382,13 @@ function updateBandOut() {
 function buildRunTree() {
   const tree = $('runTree');
   tree.innerHTML = '';
+  const flat = state.model.flat;
+  tree.classList.toggle('flat', flat);
+  $('runsTitle').textContent = flat ? 'Capteurs' : 'Mesures';
+  $('runSearch').placeholder = flat ? 'Filtrer les capteurs…' : 'Filtrer les mesures…';
+  $('runSearch').value = '';
+  $('runsHint').hidden = !flat;
+  if (flat) { buildSensorList(tree); return; }
   for (const fam of state.model.families) {
     const famEl = document.createElement('div');
     famEl.className = 'fam' + (state.famOpen.has(fam.key) ? ' open' : '');
@@ -371,7 +443,50 @@ function buildRunTree() {
   syncRunChecks();
 }
 
+/** Liste plate des capteurs à nom unique (DataMesure 2, ISO 7849), sans familles. */
+function buildSensorList(tree) {
+  for (const r of state.model.runList) {
+    const lab = document.createElement('label');
+    lab.className = 'run check';
+    lab.dataset.run = r.id;
+    const origin = [...new Set(Object.values(r.fullNames))];
+    lab.title = `${r.label}\n${origin.join('\n')}`;
+    lab.innerHTML = `<input type="checkbox"><span></span>
+      <span class="rn">${r.label}</span>
+      ${r.nCoords === 0 ? '<span class="nocoord" title="Aucune coordonnée capteur">∅</span>'
+        : (state.model.tests ? '' : `<span class="ro">${r.famLabel}</span>`)}`;
+    const chk = lab.querySelector('input');
+    chk.onchange = () => {
+      if (chk.checked) state.selRuns.add(r.id); else state.selRuns.delete(r.id);
+      syncRunChecks();
+      refreshAll();
+      highlightSensor(r.id);       // les indices des billes ont changé
+    };
+    lab.onmouseenter = () => highlightSensor(r.id);
+    lab.onmouseleave = () => highlightSensor(null);
+    tree.appendChild(lab);
+  }
+  syncRunChecks();
+}
+
+/** Met en évidence un capteur dans toutes les vues (bille + étiquette). */
+function highlightSensor(runId) {
+  for (const v of views.values()) {
+    const i = runId ? v.scene.records.findIndex((rec) => rec.run.id === runId) : -1;
+    const shown = i >= 0 && (!v.scene.scaleArr || v.scene.scaleArr[i] > 0);
+    v.scene.showHover(shown ? v.scene.records[i] : null, i);
+    v.scene.setLabelHot(shown ? i : -1);
+  }
+}
+
 function syncRunChecks() {
+  if (state.model.flat) {
+    for (const lab of $('runTree').querySelectorAll('.run')) {
+      lab.querySelector('input').checked = state.selRuns.has(lab.dataset.run);
+    }
+    $('badgeRuns').textContent = `${state.selRuns.size}/${state.model.runList.length}`;
+    return;
+  }
   for (const fam of state.model.families) {
     const famEl = $('runTree').querySelector(`.fam[data-fam="${cssEsc(fam.key)}"]`);
     if (!famEl) continue;
@@ -496,6 +611,7 @@ function bindPointer(v) {
       const idx = v.scene.pick(e.clientX, e.clientY);
       const rec = idx >= 0 ? v.scene.records[idx] : null;
       v.scene.showHover(rec, idx);
+      v.scene.setLabelHot(rec ? idx : -1);
       if (rec) showTip(e.clientX, e.clientY, rec, v);
       else $('tip').hidden = true;
       el.style.cursor = rec ? 'pointer' : '';
@@ -504,6 +620,7 @@ function bindPointer(v) {
 
   el.addEventListener('pointerleave', () => {
     v.scene.showHover(null);
+    v.scene.setLabelHot(-1);
     $('tip').hidden = true;
   });
 
@@ -525,7 +642,7 @@ function showTip(x, y, rec, v) {
   const unit = state.model.unit;
   tip.innerHTML = `<div><b>${rec.name}</b> · ${fmt(rec.value, 1)} ${unit}</div>
     <div class="t-run">${rec.runName}</div>
-    <div class="t-run">${v.label} · ${rec.run.famLabel} · ${metricShort()}</div>`;
+    <div class="t-run">${v.label}${state.model.flat ? '' : ` · ${rec.run.famLabel}`} · ${metricShort()}</div>`;
   tip.hidden = false;
   const r = tip.getBoundingClientRect();
   tip.style.left = clamp(x + 14, 6, window.innerWidth - r.width - 6) + 'px';
@@ -539,8 +656,23 @@ function selectRecord(rec, idx = -1, excKey = null) {
     // marque le même capteur / même mesure dans toutes les vues
     const i = v.scene.records.findIndex((r) => r.run.id === rec.run.id && r.si === rec.si);
     v.scene.showSelection(i >= 0 ? v.scene.records[i] : null, i);
+    v.scene.setLabelSelected(i);
   }
+  if (!rec) for (const v of views.values()) v.scene.setLabelSelected(-1);
+  markSelectedRow(rec);
   updateDetail();
+}
+
+/** Surligne (et fait défiler jusqu'à) la ligne du capteur sélectionné dans la liste. */
+function markSelectedRow(rec) {
+  const tree = $('runTree');
+  const prev = tree.querySelector('.run.is-sel');
+  const id = rec && state.model?.flat ? rec.run.id : null;
+  if (prev && prev.dataset.run === id) return;
+  if (prev) prev.classList.remove('is-sel');
+  if (!id) return;
+  const row = tree.querySelector(`.run[data-run="${cssEsc(id)}"]`);
+  if (row) { row.classList.add('is-sel'); row.scrollIntoView({ block: 'nearest' }); }
 }
 
 /* ============================== DÉTAIL CAPTEUR ============================== */
@@ -553,6 +685,7 @@ function updateDetail() {
   d.hidden = false;
   $('dSensor').textContent = `${rec.name} — ${state.model.group}`;
   $('dRun').textContent = rec.runName;
+  $('dFamLbl').textContent = state.model.famTitle;
   $('dFam').textContent = rec.run.famLabel;
   $('dPos').textContent = `${fmt(rec.pos[0], 1)} ; ${fmt(rec.pos[1], 1)} ; ${fmt(rec.pos[2], 1)}`;
   $('dMetric').textContent = metricShort();
@@ -758,6 +891,9 @@ function refreshAll() {
       scales[i] = k;
     }
     v.scene.setPoints(recs, colors, state.radius, scales, state.ballOpacity);
+    v.scene.setLabels(m.flat
+      ? recs.map((r, i) => ({ idx: i, text: r.name, pos: r.pos })).filter((it) => scales[it.idx] > 0)
+      : null, state.labels);
     const nRuns = new Set(recs.map((r) => r.run.id)).size;
     v.meta.textContent = `${nRuns} mesure(s) · ${n} bille(s)`;
   }
@@ -1135,10 +1271,11 @@ function applyProject(o) {
   }
   if (Array.isArray(o.data?.runs)) {
     const keep = o.data.runs.filter((id) => mm.runById.has(id));
-    state.selRuns = new Set(keep);
+    // projet issu d'un autre format de fichier : aucun identifiant commun, tout reste coché
+    if (keep.length || !o.data.runs.length) state.selRuns = new Set(keep);
   }
   if (o.metric) {
-    state.mode = o.metric.mode === 'band' && mm.nBands ? 'band' : 'global';
+    state.mode = (o.metric.mode === 'band' || !mm.hasGlobal) && mm.nBands ? 'band' : 'global';
     state.band = clamp(o.metric.band | 0, 0, Math.max(0, mm.nBands - 1));
   }
   if (o.color) {
@@ -1277,6 +1414,7 @@ function snapshot() {
   for (const v of vs) {
     const c = v.scene.renderer.domElement;
     ctx.drawImage(c, x, 46);
+    drawSnapshotLabels(ctx, v.scene, x, 46, cs);
     ctx.fillStyle = v.color;
     ctx.fillRect(x, 46, c.width, 3);
     ctx.fillStyle = cs.getPropertyValue('--txt').trim();
@@ -1295,6 +1433,28 @@ function snapshot() {
   a.href = cv.toDataURL('image/png');
   a.click();
   toast('Image exportée', 'ok');
+}
+
+/** Reporte les étiquettes HTML de la vue sur l'image exportée. */
+function drawSnapshotLabels(ctx, scene, ox, oy, cs) {
+  const tags = scene.labelSnapshot();
+  if (!tags.length) return;
+  const dpr = scene.renderer.getPixelRatio();
+  ctx.save();
+  ctx.font = `600 ${Math.round(10 * dpr)}px "Segoe UI", sans-serif`;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const accent = cs.getPropertyValue('--accent').trim();
+  for (const t of tags) {
+    const w = ctx.measureText(t.text).width + 10 * dpr, h = 15 * dpr;
+    const bx = ox + t.x + 7 * dpr, by = oy + t.y - 7 * dpr - h;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = t.hot ? accent : cs.getPropertyValue('--panel').trim();
+    ctx.fillRect(bx, by, w, h);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = t.hot ? '#fff' : cs.getPropertyValue('--txt').trim();
+    ctx.fillText(t.text, bx + 5 * dpr, by + h / 2);
+  }
+  ctx.restore();
 }
 
 /* ============================== BOUCLE DE RENDU ============================== */
@@ -1432,6 +1592,10 @@ function bindUI() {
     refreshAll();
   };
   $('chkScaleByLevel').onchange = (e) => { state.scaleByLevel = e.target.checked; refreshAll(); };
+  $('chkLabels').onchange = (e) => {
+    state.labels = e.target.checked;
+    for (const v of views.values()) v.scene.setLabels(v.scene.labels, state.labels);
+  };
   $('chkInspect').onchange = (e) => {
     state.inspect = e.target.checked;
     if (!state.inspect) { $('tip').hidden = true; for (const v of views.values()) v.scene.showHover(null); }
@@ -1497,6 +1661,12 @@ function bindUI() {
   $('btnNoRuns').onclick = () => { state.selRuns.clear(); syncRunChecks(); refreshAll(); };
   $('runSearch').oninput = (e) => {
     const q = e.target.value.trim().toLowerCase();
+    if (state.model?.flat) {
+      for (const lab of $('runTree').querySelectorAll('.run')) {
+        lab.classList.toggle('hidden', !!q && !(lab.textContent + ' ' + lab.title).toLowerCase().includes(q));
+      }
+      return;
+    }
     for (const famEl of $('runTree').querySelectorAll('.fam')) {
       let visible = 0;
       for (const lab of famEl.querySelectorAll('.run')) {
