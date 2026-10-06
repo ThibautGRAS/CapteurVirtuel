@@ -1,0 +1,17 @@
+J’ai besoin que tu me crées du code pour répondre au besoin suivant : afficher sur une représentation graphique type HTML des données de mesures, contenues dans une structure json chargée, représentées sur une CAO importée (format step).
+
+L’utilisateur importe les 2 fichiers :
+- Fichier de CAO de la machine étudiée (format step, comprenant une ou plusieurs pièces).
+-Fichier d’analyse des mesures réalisées sur la machine (format json). Des mesures sont réalisées sur cette machine en appliquant 3 excitations différentes (nommées EXCITATION1, EXCITATION2 et EXCITATION3) et en mesurant la réponse vibratoire avec un lot de 10 accéléromètres répartis sur la surface. Il peuvent être soit positionnés uniquement sur le dome de la machine, soit sur la base, soit sur le cylindre, soit sur la structure intégrale (nom explicite dans la structure). Pour chaque type de position des capteurs, plusieurs mesures sont réalisées (exemple : 24 positionnement différents des capteurs sur le cylindre). La structure donne le nom des mesures, la position des accéléromètres 1 à 10 dans l’espace (X, Y, Z), et les quantités mesurées. Dans un premier temps tu vas t’intéresser uniquement aux données suivantes pour les acceleromètres :
+- Data_3rdOctave_Vel : spectre de vitesse vibratoire en tiers d’octave pour chaque capteur et chaque mesure (la bande de fréquence correspondante s’appelle frq_3rdOctave).
+-Data_GlobalLevel_Vel : niveau global sur toute la bande de fréquence de chaque capteur et chaque mesure.
+
+Ce que je veux :
+-	Un outil qui permette de charger les 2 fichiers
+-	Pour la CAO, on doit pouvoir à tout moment ajouter un facteur d’echelle, un offset de positionnement (X/Y/Z, thetaX, thetaY, thetaZ), et changer l’opacité de la pièce.
+-	Les quantités mesures sont affichées par des billes de couleurs dépendant du niveau, positionnées au niveau de chaque capteur. La taille des biilles peut petre ajoustée par l’utlisateur. La dynamique des couleurs est ajoutée automatiquement mais peut être modifiée par l’utilisateur (valeur min, valeur max). 
+-	L’utilisateur peut sélectionner les mesures d’interêt par une liste où il peut cocher/decocher les mesures. Par défaut, tout est selectionnées. Les mesures sont également regroupées par famille (dome, cylindre, …) afin de pouvoir décocher/cocher plus rapidement.
+-	Les mesures peuvent être réprésenté par bande d’octave (avec un curseur pour choisir la fréquence) ou directement le niveau global.
+-	L’utilisateur peut choisir d’afficher les résultat pour une excitation données (et choisir quelle excitation) ou en choisir plusieurs (dans ce cas, plusieurs représentation graphiques collées)
+-	Il y a évidemment possibilité de tourner/zoomer la représentation pour voir tout autour de la pièce
+-	Il existe un mode où l’utilisateur peut en sélectionnant un capteur (une bille) savoir de quel capteur il s’agit (nom acceleromètre) et de quelle mesure il vient.

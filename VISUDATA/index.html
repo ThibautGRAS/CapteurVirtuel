@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VISUDATA — Cartographie vibratoire 3D</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23003c71'/%3E%3Ccircle cx='10.5' cy='19' r='4' fill='%2300a3d7'/%3E%3Ccircle cx='20.5' cy='11.5' r='4.5' fill='%23f28100'/%3E%3Ccircle cx='22' cy='22' r='3' fill='%23ffd24d'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+<!-- Noyau OpenCascade (lecture STEP / IGES / BREP) : script classique -> global `occtimportjs` -->
+<script src="vendor/occt-import-js.js"></script>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/jsm/" } }
+</script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= BARRE SUPERIEURE ================= -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-plate">
+        <img class="brand-logo" src="cetim-logo.png" alt="Cetim" title="Cetim — Institut Carnot">
+      </div>
+      <div class="brand-txt">
+        <h1>VISUDATA</h1>
+        <p>Cartographie vibratoire 3D sur CAO</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="metric-readout" id="metricReadout" hidden>
+        <span class="mr-label">Grandeur</span>
+        <strong id="mrValue">—</strong>
+      </div>
+      <button class="btn" id="btnOpenProj" title="Ouvrir un projet (.visudata.json)">
+        <svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7V5h5l2 2"/></svg> Ouvrir
+      </button>
+      <button class="btn" id="btnSaveProj" title="Enregistrer le projet (configuration + fichiers liés)">
+        <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3M8 21v-6h8v6"/></svg> Projet
+      </button>
+      <span class="topbar-sep"></span>
+      <button class="btn" id="btnFit" title="Recadrer la vue sur la scène (touche F)">
+        <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg> Recadrer
+      </button>
+      <button class="btn toggle is-on" id="btnSync" title="Lier les rotations/zoom entre les vues">
+        <svg viewBox="0 0 24 24"><path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/></svg> Vues liées
+      </button>
+      <button class="btn" id="btnSnap" title="Exporter l'image des vues en PNG">
+        <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.2"/></svg> PNG
+      </button>
+      <button class="btn icon" id="btnTheme" title="Thème clair / sombre">
+        <svg viewBox="0 0 24 24"><path d="M20 14a8 8 0 1 1-10-10 7 7 0 0 0 10 10z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ================= PANNEAU LATERAL ================= -->
+  <aside class="sidebar" id="sidebar">
+
+    <!-- --- Fichiers --- -->
+    <section class="card open" data-sec="files">
+      <h2 class="card-head"><span class="chev"></span>Fichiers<span class="badge" id="badgeFiles">0/2</span></h2>
+      <div class="card-body">
+        <label class="drop" id="dropCad">
+          <input type="file" id="fileCad" accept=".step,.stp,.STEP,.STP,.iges,.igs,.brep" hidden>
+          <div class="drop-ic">
+            <svg viewBox="0 0 24 24"><path d="M12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
+          </div>
+          <div class="drop-txt">
+            <strong>CAO machine</strong>
+            <span id="cadName">.step / .stp / .iges / .brep</span>
+          </div>
+        </label>
+        <label class="drop" id="dropJson">
+          <input type="file" id="fileJson" accept=".json,.JSON" hidden>
+          <div class="drop-ic">
+            <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>
+          </div>
+          <div class="drop-txt">
+            <strong>Mesures</strong>
+            <span id="jsonName">fichier d'analyse .json</span>
+          </div>
+        </label>
+        <button class="btn tiny wide" id="btnReloadFiles" hidden>
+          <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4"/></svg>
+          Recharger les derniers fichiers
+        </button>
+        <div id="fmtBox" class="infobox" hidden></div>
+        <div class="hint">Astuce : les fichiers peuvent aussi être glissés-déposés n'importe où dans la fenêtre.
+          Un nouveau fichier de mesures remplace le précédent, quel que soit son format
+          (DataMesure 1, DataMesure 2, DataISO7849_1 / _2).</div>
+        <div id="warnBox" class="warnbox" hidden></div>
+        <div id="projBox" class="projbox" hidden></div>
+      </div>
+    </section>
+
+    <!-- --- Excitations --- -->
+    <section class="card open" data-sec="exc" hidden>
+      <h2 class="card-head"><span class="chev"></span><span id="excTitle">Excitations</span><span class="badge" id="badgeExc">—</span></h2>
+      <div class="card-body">
+        <div class="field" id="testWrap" hidden>
+          <label class="lbl">Test</label>
+          <select id="selTest"></select>
+        </div>
+        <div class="chips" id="excChips"></div>
+        <div class="hint">Plusieurs excitations cochées ⇒ vues juxtaposées, échelle de couleurs commune.</div>
+      </div>
+    </section>
+
+    <!-- --- Grandeur --- -->
+    <section class="card open" data-sec="metric" hidden>
+      <h2 class="card-head"><span class="chev"></span>Grandeur affichée</h2>
+      <div class="card-body">
+        <div class="seg" id="segMode">
+          <button data-mode="global" class="is-on">Niveau global</button>
+          <button data-mode="band">Tiers d'octave</button>
+        </div>
+
+        <div id="bandWrap" class="band-wrap" hidden>
+          <div class="row-between">
+            <label class="lbl">Bande de fréquence</label>
+            <output class="out big" id="bandOut">— Hz</output>
+          </div>
+          <input type="range" id="bandSlider" min="0" max="19" step="1" value="0">
+          <div class="ticks" id="bandTicks"></div>
+          <div class="band-nav">
+            <button class="btn tiny" id="bandPrev">◀ bande</button>
+            <button class="btn tiny" id="bandNext">bande ▶</button>
+          </div>
+        </div>
+
+        <div class="field" id="groupWrap" hidden>
+          <label class="lbl">Groupe de capteurs</label>
+          <select id="selGroup"></select>
+        </div>
+      </div>
+    </section>
+
+    <!-- --- Echelle de couleurs --- -->
+    <section class="card open" data-sec="color" hidden>
+      <h2 class="card-head"><span class="chev"></span>Échelle de couleurs</h2>
+      <div class="card-body">
+        <div class="field">
+          <label class="lbl">Palette</label>
+          <select id="selCmap"></select>
+        </div>
+        <canvas id="cmapPreview" class="cmap-preview" width="260" height="14"></canvas>
+        <label class="check"><input type="checkbox" id="chkAuto" checked><span></span>Dynamique automatique</label>
+        <div class="grid2">
+          <div class="field">
+            <label class="lbl">Min (dB)</label>
+            <input type="number" id="inMin" step="0.5">
+          </div>
+          <div class="field">
+            <label class="lbl">Max (dB)</label>
+            <input type="number" id="inMax" step="0.5">
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn tiny" id="btnAutoScale">Recalculer sur la sélection</button>
+          <button class="btn tiny" id="btnAllScale">Sur toutes les mesures</button>
+        </div>
+        <label class="check"><input type="checkbox" id="chkClamp" checked><span></span>Écrêter hors bornes (sinon masqué)</label>
+      </div>
+    </section>
+
+    <!-- --- Billes --- -->
+    <section class="card open" data-sec="balls" hidden>
+      <h2 class="card-head"><span class="chev"></span>Billes de mesure</h2>
+      <div class="card-body">
+        <div class="row-between"><label class="lbl">Taille (rayon)</label><output class="out" id="outRadius">—</output></div>
+        <input type="range" id="rngRadius" min="1" max="100" step="1" value="30">
+        <div class="row-between"><label class="lbl">Opacité</label><output class="out" id="outBallOpacity">100 %</output></div>
+        <input type="range" id="rngBallOpacity" min="10" max="100" step="1" value="100">
+        <label class="check"><input type="checkbox" id="chkScaleByLevel"><span></span>Taille proportionnelle au niveau</label>
+        <label class="check"><input type="checkbox" id="chkInspect" checked><span></span>Mode identification (survol / clic)</label>
+        <label class="check" id="labelsWrap" hidden title="Sans les étiquettes, le nom reste affiché au survol d'une bille ou d'une ligne de la liste">
+          <input type="checkbox" id="chkLabels" checked><span></span>Afficher les noms des capteurs</label>
+      </div>
+    </section>
+
+    <!-- --- Interpolation de surface (RBF) --- -->
+    <section class="card" data-sec="interp" hidden>
+      <h2 class="card-head"><span class="chev"></span>Interpolation surface<span class="badge" id="badgeInterp">off</span></h2>
+      <div class="card-body">
+        <label class="check"><input type="checkbox" id="chkInterp"><span></span>Activer l'interpolation RBF</label>
+        <div id="interpNoCad" class="hint warn-hint" hidden>Une CAO doit être chargée pour interpoler un champ de surface.</div>
+
+        <div id="interpOpts">
+          <div class="field">
+            <label class="lbl">Affichage</label>
+            <div class="seg small" id="segField">
+              <button data-f="both" class="is-on">Surface + points</button>
+              <button data-f="surf">Surface seule</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="lbl">Noyau radial</label>
+            <select id="selKernel"></select>
+          </div>
+
+          <div class="row-between"><label class="lbl">ε — portée du noyau</label><output class="out" id="outEps">—</output></div>
+          <input type="range" id="rngEps" min="0" max="100" step="1" value="40">
+          <div class="field inline"><label class="lbl">Valeur (mm)</label><input type="number" id="inEps" step="1" min="0.1"></div>
+
+          <div class="row-between"><label class="lbl">λ — lissage</label><output class="out" id="outLambda">1e-3</output></div>
+          <input type="range" id="rngLambda" min="-8" max="0" step="0.1" value="-3">
+
+          <div class="field">
+            <label class="lbl">Terme polynomial</label>
+            <select id="selPoly"></select>
+          </div>
+
+          <label class="check"><input type="checkbox" id="chkMask" checked><span></span>Masquer les zones sans mesure</label>
+          <div class="row-between"><label class="lbl">Distance d'influence max</label><output class="out" id="outDmax">—</output></div>
+          <input type="range" id="rngDmax" min="1" max="100" step="1" value="35">
+
+          <div class="row-between">
+            <label class="lbl" title="La triangulation STEP est faite pour la géométrie, pas pour un champ : elle est raffinée ici">Pas de maillage du champ</label>
+            <output class="out" id="outMesh">—</output>
+          </div>
+          <input type="range" id="rngMesh" min="0" max="100" step="1" value="40">
+
+          <div class="row-between"><label class="lbl">Opacité surface</label><output class="out" id="outFieldOpacity">100 %</output></div>
+          <input type="range" id="rngFieldOpacity" min="10" max="100" step="1" value="100">
+          <label class="check" title="Surface et billes affichées en couleur brute : la teinte correspond exactement à la colorbar, sans modulation par l'éclairage">
+            <input type="checkbox" id="chkFieldUnlit" checked><span></span>Couleurs fidèles (surface + billes)</label>
+
+          <div class="field inline"><label class="lbl">Points max (solveur)</label><input type="number" id="inMaxPts" step="50" min="10" max="1500" value="400"></div>
+
+          <div class="row">
+            <button class="btn tiny" id="btnInterpRun">Recalculer</button>
+            <button class="btn tiny" id="btnInterpAuto">ε automatique</button>
+          </div>
+          <label class="check"><input type="checkbox" id="chkInterpLive" checked><span></span>Recalcul automatique</label>
+          <div id="interpStat" class="statbox"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- --- CAO --- -->
+    <section class="card" data-sec="cad" hidden>
+      <h2 class="card-head"><span class="chev"></span>Recalage CAO<span class="badge" id="badgeCad">—</span></h2>
+      <div class="card-body">
+        <div class="row-between"><label class="lbl">Facteur d'échelle</label><output class="out" id="outScale">1.000</output></div>
+        <input type="range" id="rngScale" min="-3" max="3" step="0.001" value="0">
+        <div class="field inline"><label class="lbl">Valeur exacte</label><input type="number" id="inScale" step="0.01" value="1"></div>
+
+        <div class="sub">Translation (mm)</div>
+        <div class="grid3">
+          <div class="field"><label class="lbl">X</label><input type="number" id="inTx" step="1" value="0"></div>
+          <div class="field"><label class="lbl">Y</label><input type="number" id="inTy" step="1" value="0"></div>
+          <div class="field"><label class="lbl">Z</label><input type="number" id="inTz" step="1" value="0"></div>
+        </div>
+        <input type="range" id="rngTx" class="mini" min="-1000" max="1000" step="1" value="0">
+        <input type="range" id="rngTy" class="mini" min="-1000" max="1000" step="1" value="0">
+        <input type="range" id="rngTz" class="mini" min="-1000" max="1000" step="1" value="0">
+
+        <div class="sub">Rotation (°)</div>
+        <div class="grid3">
+          <div class="field"><label class="lbl">θX</label><input type="number" id="inRx" step="1" value="0"></div>
+          <div class="field"><label class="lbl">θY</label><input type="number" id="inRy" step="1" value="0"></div>
+          <div class="field"><label class="lbl">θZ</label><input type="number" id="inRz" step="1" value="0"></div>
+        </div>
+        <input type="range" id="rngRx" class="mini" min="-180" max="180" step="1" value="0">
+        <input type="range" id="rngRy" class="mini" min="-180" max="180" step="1" value="0">
+        <input type="range" id="rngRz" class="mini" min="-180" max="180" step="1" value="0">
+        <label class="check"><input type="checkbox" id="chkPivot"><span></span>Pivoter autour du centre de la CAO</label>
+
+        <div class="sub">Apparence</div>
+        <div class="row-between"><label class="lbl">Opacité</label><output class="out" id="outOpacity">35 %</output></div>
+        <input type="range" id="rngOpacity" min="0" max="100" step="1" value="35">
+        <label class="check"><input type="checkbox" id="chkEdges"><span></span>Afficher les arêtes</label>
+        <label class="check"><input type="checkbox" id="chkFlat" checked><span></span>Teinte neutre unique</label>
+
+        <div class="row">
+          <button class="btn tiny" id="btnCadAuto">Auto-ajuster sur les capteurs</button>
+          <button class="btn tiny" id="btnCadReset">Réinitialiser</button>
+        </div>
+
+        <div class="sub">Pièces <span class="badge" id="badgeParts">0</span></div>
+        <div class="parts" id="partList"></div>
+      </div>
+    </section>
+
+    <!-- --- Mesures --- -->
+    <section class="card open" data-sec="runs" hidden>
+      <h2 class="card-head"><span class="chev"></span><span id="runsTitle">Mesures</span><span class="badge" id="badgeRuns">—</span></h2>
+      <div class="card-body">
+        <input type="search" id="runSearch" class="search" placeholder="Filtrer les mesures…">
+        <div class="row">
+          <button class="btn tiny" id="btnAllRuns">Tout cocher</button>
+          <button class="btn tiny" id="btnNoRuns">Tout décocher</button>
+        </div>
+        <div class="tree" id="runTree"></div>
+        <div class="hint" id="runsHint" hidden>Survolez un capteur pour le repérer dans les vues ; un clic sur une bille surligne sa ligne.</div>
+      </div>
+    </section>
+
+    <!-- --- Affichage --- -->
+    <section class="card" data-sec="disp" hidden>
+      <h2 class="card-head"><span class="chev"></span>Affichage 3D</h2>
+      <div class="card-body">
+        <label class="check"><input type="checkbox" id="chkGrid" checked><span></span>Grille au sol</label>
+        <label class="check"><input type="checkbox" id="chkAxes" checked><span></span>Trièdre X/Y/Z</label>
+        <label class="check"><input type="checkbox" id="chkBox"><span></span>Boîte englobante capteurs</label>
+        <label class="check"><input type="checkbox" id="chkPersp" checked><span></span>Projection perspective</label>
+        <div class="field">
+          <label class="lbl">Vue prédéfinie</label>
+          <div class="seg small" id="segView">
+            <button data-v="iso">Iso</button><button data-v="x">+X</button>
+            <button data-v="y">+Y</button><button data-v="z">+Z</button>
+          </div>
+        </div>
+        <div class="hint">Souris : clic gauche = rotation · molette = zoom · clic droit / molette pressée = panoramique.</div>
+      </div>
+    </section>
+
+    <footer class="side-foot">
+      <span>VISUDATA v2.0</span><span class="dot"></span><span>Cetim</span>
+    </footer>
+  </aside>
+
+  <!-- ================= SCENE ================= -->
+  <main class="stage">
+    <div class="views" id="views"></div>
+
+    <!-- Colorbar flottante -->
+    <div class="colorbar" id="colorbar" hidden>
+      <div class="cb-top" id="cbMax">—</div>
+      <canvas id="cbCanvas" width="18" height="220"></canvas>
+      <div class="cb-bot" id="cbMin">—</div>
+      <div class="cb-unit" id="cbUnit">dB</div>
+    </div>
+
+    <!-- Ecran d'accueil -->
+    <div class="empty" id="emptyState">
+      <div class="empty-inner">
+        <div class="empty-ic">
+          <svg viewBox="0 0 24 24"><path d="M12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/><circle cx="7.5" cy="10.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="16.5" cy="10.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none"/></svg>
+        </div>
+        <h2>Chargez vos deux fichiers pour démarrer</h2>
+        <p>Une CAO au format <b>STEP</b> et le fichier d'analyse <b>JSON</b> des mesures.<br>
+        Les billes colorées se positionnent automatiquement sur les coordonnées des accéléromètres.</p>
+        <div class="empty-steps">
+          <div><span>1</span>CAO STEP</div><div><span>2</span>Mesures JSON</div><div><span>3</span>Recalage</div><div><span>4</span>Analyse</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fiche capteur -->
+    <div class="detail" id="detail" hidden>
+      <div class="detail-head">
+        <div>
+          <div class="d-sensor" id="dSensor">—</div>
+          <div class="d-run" id="dRun">—</div>
+        </div>
+        <button class="btn icon tiny" id="dBig" title="Agrandir / réduire la fenêtre">
+          <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+        <button class="btn icon tiny" id="dClose" title="Fermer (Échap)">✕</button>
+      </div>
+      <div class="detail-body">
+        <div class="kv"><span id="dFamLbl">Famille</span><b id="dFam">—</b></div>
+        <div class="kv"><span>Position (mm)</span><b id="dPos">—</b></div>
+        <div class="kv"><span>Grandeur</span><b id="dMetric">—</b></div>
+        <div class="d-vals" id="dVals"></div>
+        <div class="d-spec">
+          <div class="d-spec-head">
+            <span>Spectre tiers d'octave</span>
+            <span id="dSpecUnit">dB</span>
+          </div>
+          <div class="d-legend" id="dLegend"></div>
+          <canvas id="dSpec" width="300" height="130"></canvas>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Infobulle survol -->
+  <div class="tip" id="tip" hidden></div>
+
+  <!-- Overlay de chargement -->
+  <div class="loading" id="loading" hidden>
+    <div class="loading-box">
+      <div class="spin"></div>
+      <div class="loading-txt" id="loadingTxt">Chargement…</div>
+    </div>
+  </div>
+
+  <!-- Zone de dépôt globale -->
+  <div class="dropveil" id="dropVeil" hidden><div>Déposez ici votre fichier STEP ou JSON</div></div>
+
+  <!-- Notifications -->
+  <div class="toasts" id="toasts"></div>
+
+  <!-- Repli si l'API File System Access n'est pas disponible -->
+  <input type="file" id="fileProj" accept=".json,.JSON" hidden>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
