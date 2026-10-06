@@ -38,7 +38,7 @@ rayonnante, constantes, graine aléatoire, figures. Le fichier de mesures
 | `data_io.py` | lecture, validation, écriture JSON, métadonnées |
 | `figures.py` | graphiques et diagrammes en barres, script autonome |
 | `tests/` | tests sur signaux artificiels à résultat connu |
-| `normes/` | ISO/TS 7849-1 et 7849-2 (référence) |
+| `normes/` | ISO/TS 7849-1 et 7849-2 — **non fournies** (licence ISO) : y déposer votre exemplaire |
 
 ## Points à connaître
 
